@@ -2,6 +2,10 @@
 
 ## [0.3.0](https://github.com/nicklockwood/Tribute/releases/tag/0.3.0) (2021-02-20)
 
+- Removed control for unresolved packages, that in our case are our own
+
+## [0.3.0](https://github.com/nicklockwood/Tribute/releases/tag/0.3.0) (2021-02-20)
+
 - Added `spmcache` parameter to support custom SPM cache locations (thanks @dottore!)
 
 ## [0.2.2](https://github.com/nicklockwood/Tribute/releases/tag/0.2.2) (2021-02-11)
