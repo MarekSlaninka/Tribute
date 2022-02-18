@@ -700,7 +700,7 @@ class Tribute {
             case .checkUnsuported:
                 return try checkUnsuported(in: directory, with: args)
             case .version:
-                return "0.3.1"
+                return "0.3.3"
         }
     }
 }
