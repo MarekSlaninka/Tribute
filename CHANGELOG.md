@@ -1,5 +1,9 @@
 # Change Log
 
+## [0.4.0](https://github.com/MarekSlaninka/Tribute/releases/tag/0.4.0) (2022-02-18)
+
+- Fixed memory usage 
+
 ## [0.3.3](https://github.com/MarekSlaninka/Tribute/releases/tag/0.3.3) (2022-02-18)
 
 - Added support for chcecking, if there is any unsuported or unknown licence in libraries 

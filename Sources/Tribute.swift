@@ -56,154 +56,14 @@ enum Command: String, CaseIterable {
     }
 }
 
-enum LicenseType: String, CaseIterable, Equatable {
-    case bsd = "BSD"
-    case mit = "MIT"
-    case isc = "ISC"
-    case zlib = "Zlib"
-    case apache = "Apache"
-    case agpl = "AGPL"
-    case lgpl = "LGPL"
-    case gpl = "GPL"
-    case UNKNOWN = "unknown"
-    
-    private var matchStrings: [String] {
-        switch self {
-            case .bsd:
-                return [
-                    "BSD License",
-                    "Redistribution and use in source and binary forms, with or without modification",
-                    "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND ANY EXPRESS OR",
-                ]
-            case .mit:
-                return [
-                    "The MIT License",
-                    "Permission is hereby granted, free of charge, to any person",
-                    "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR",
-                ]
-            case .isc:
-                return [
-                    "Permission to use, copy, modify, and/or distribute this software for any",
-                ]
-            case .zlib:
-                return [
-                    "Altered source versions must be plainly marked as such, and must not be",
-                ]
-            case .apache:
-                return [
-                    "Apache License",
-                ]
-            case .UNKNOWN:
-                return [
-                    
-                ]
-            case .agpl:
-                return [
-                    "GNU AFFERO GENERAL PUBLIC LICENSE",
-                ]
-            case .lgpl:
-                return [
-                    "GNU LESSER GENERAL PUBLIC LICENSE",
-                ]
-            case .gpl:
-                return [
-                    "GNU GENERAL PUBLIC LICENSE",
-                ]
-                
-        }
-    }
-    
-    init(licenseText: String) {
-        let preprocessedText = Self.preprocess(licenseText)
-        guard let type =
-                Self
-                .allCases
-                .filter({$0 != .UNKNOWN})
-                .first(where: {
-                    $0.matches(preprocessedText: preprocessedText)
-                }) else {
-                    self = .UNKNOWN
-                    return
-                }
-        self = type
-    }
-    
-    func matches(_ licenseText: String) -> Bool {
-        matches(preprocessedText: Self.preprocess(licenseText))
-    }
-    
-    private func matches(preprocessedText: String) -> Bool {
-        matchStrings.contains {
-            preprocessedText.range(of: $0, options: .caseInsensitive) != nil
-        }
-    }
-    
-    private static func preprocess(_ licenseText: String) -> String {
-        licenseText.lowercased()
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-    }
-    
-    static func allRawValues() -> [String] {
-        return Self.allCases.map({$0.rawValue})
-    }
-    
-}
-
-struct Library {
-    var name: String
-    var licensePath: String
-    var licenseType: LicenseType
-    var licenseText: String
-}
-
-private extension String {
-    func addingTrailingSpace(toWidth width: Int) -> String {
-        self + String(repeating: " ", count: width - count)
-    }
-}
 
 class Tribute {
-    // Find best match for a given string in a list of options
-    func bestMatches(for query: String, in options: [String]) -> [String] {
-        let lowercaseQuery = query.lowercased()
-        // Sort matches by Levenshtein edit distance
-        return options
-            .compactMap { option -> (String, Int)? in
-                let lowercaseOption = option.lowercased()
-                let distance = editDistance(lowercaseOption, lowercaseQuery)
-                guard distance <= lowercaseQuery.count / 2 ||
-                        !lowercaseOption.commonPrefix(with: lowercaseQuery).isEmpty
-                else {
-                    return nil
-                }
-                return (option, distance)
-            }
-            .sorted { $0.1 < $1.1 }
-            .map { $0.0 }
-    }
     
-    /// The Levenshtein edit-distance between two strings
-    func editDistance(_ lhs: String, _ rhs: String) -> Int {
-        var dist = [[Int]]()
-        for i in 0 ... lhs.count {
-            dist.append([i])
-        }
-        for j in 1 ... rhs.count {
-            dist[0].append(j)
-        }
-        for i in 1 ... lhs.count {
-            let lhs = lhs[lhs.index(lhs.startIndex, offsetBy: i - 1)]
-            for j in 1 ... rhs.count {
-                if lhs == rhs[rhs.index(rhs.startIndex, offsetBy: j - 1)] {
-                    dist[i].append(dist[i - 1][j - 1])
-                } else {
-                    dist[i].append(min(dist[i - 1][j] + 1, dist[i][j - 1] + 1, dist[i - 1][j - 1] + 1))
-                }
-            }
-        }
-        return dist[lhs.count][rhs.count]
-    }
+    lazy var helpProvider = HelpProvider()
+    lazy var librariesFetcher = LibrariesFetcher()
+    lazy var closestMatchFInder = ClosestMatchFinder()
+    
+  
     
     // Parse a flat array of command-line arguments into a dictionary of flags and values
     func preprocessArguments(_ args: [String]) throws -> [Argument: [String]] {
@@ -216,7 +76,7 @@ class Tribute {
                 // Long argument names
                 let key = String(arg.unicodeScalars.dropFirst(2))
                 guard let argument = Argument(rawValue: key) else {
-                    guard let match = bestMatches(for: key, in: argumentNames).first else {
+                    guard let match = closestMatchFInder.bestMatches(for: key, in: argumentNames).first else {
                         throw TributeError("Unknown option --\(key).")
                     }
                     throw TributeError("Unknown option --\(key). Did you mean --\(match)?")
@@ -245,223 +105,8 @@ class Tribute {
         return namedArgs
     }
     
-    func fetchLibraries(in directory: URL,
-                        excluding: [Glob],
-                        spmCache: URL?,
-                        includingPackages: Bool = true) throws -> [Library]
-    {
-        let standardizedDirectory = directory.standardized
-        let directoryPath = standardizedDirectory.path
-        
-        let manager = FileManager.default
-        guard let enumerator = manager.enumerator(
-            at: standardizedDirectory,
-            includingPropertiesForKeys: nil,
-            options: .skipsHiddenFiles
-        ) else {
-            throw TributeError("Unable to process directory at \(directoryPath).")
-        }
-        
-        // Fetch libraries
-        var libraries = [Library]()
-        for case let licenceFile as URL in enumerator {
-            if excluding.contains(where: { $0.matches(licenceFile.path) }) {
-                continue
-            }
-            let licensePath = licenceFile.path.dropFirst(directoryPath.count)
-            if includingPackages {
-                if licenceFile.lastPathComponent == "Package.resolved" {
-                    libraries += try fetchLibraries(forResolvedPackageAt: licenceFile, spmCache: spmCache)
-                    continue
-                }
-                //                if licenceFile.lastPathComponent == "Package.swift",
-                //                   !manager.fileExists(
-                //                       atPath: licenceFile.deletingPathExtension()
-                //                           .appendingPathExtension("resolved").path
-                //                   )
-                //                {
-                //                    guard let string = try? String(contentsOf: licenceFile) else {
-                //                        throw TributeError("Unable to read Package.swift at \(licensePath).")
-                //                    }
-                //                    if string.range(of: ".package(") != nil {
-                //                        throw TributeError(
-                //                            "Found unresolved Package.swift at \(licensePath). Run 'swift package resolve' to resolve dependencies."
-                //                        )
-                //                    }
-                //                }
-            }
-            let name = licenceFile.deletingLastPathComponent().lastPathComponent
-            if libraries.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-                continue
-            }
-            let ext = licenceFile.pathExtension
-            let fileName = licenceFile.deletingPathExtension().lastPathComponent.lowercased()
-            guard ["license", "licence"].contains(fileName),
-                  ["", "text", "txt", "md"].contains(ext)
-            else {
-                continue
-            }
-            var isDirectory: ObjCBool = false
-            _ = manager.fileExists(atPath: licenceFile.path, isDirectory: &isDirectory)
-            if isDirectory.boolValue {
-                continue
-            }
-            do {
-                let licenseText = try String(contentsOf: licenceFile)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                let library = Library(
-                    name: name,
-                    licensePath: String(licensePath),
-                    licenseType: LicenseType(licenseText: licenseText),
-                    licenseText: licenseText
-                )
-                libraries.append(library)
-            } catch {
-                throw TributeError("Unable to read license file at \(licensePath).")
-            }
-        }
-        
-        return libraries.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
+  
     
-    func fetchLibraries(forResolvedPackageAt url: URL, spmCache: URL?) throws -> [Library] {
-        struct Pin: Decodable {
-            let package: String
-            let repositoryURL: URL
-        }
-        struct Object: Decodable {
-            let pins: [Pin]
-        }
-        struct Resolved: Decodable {
-            let object: Object
-        }
-        let filter: Set<String>
-        do {
-            let data = try Data(contentsOf: url)
-            let resolved = try JSONDecoder().decode(Resolved.self, from: data)
-            filter = Set(resolved.object.pins.flatMap {
-                [
-                    $0.package.lowercased(),
-                    $0.repositoryURL.deletingPathExtension().lastPathComponent.lowercased(),
-                ]
-            })
-        } catch {
-            throw TributeError("Unable to read Swift Package file at \(url.path).")
-        }
-        let directory: URL
-        if let spmCache = spmCache {
-            directory = spmCache
-        } else if let derivedDataDirectory = FileManager.default
-                    .urls(for: .libraryDirectory, in: .userDomainMask).first?
-                    .appendingPathComponent("Developer/Xcode/DerivedData")
-        {
-            directory = derivedDataDirectory
-        } else {
-            throw TributeError("Unable to locate ~/Library/Developer/Xcode/DerivedData directory.")
-        }
-        let libraries = try fetchLibraries(
-            in: directory,
-            excluding: [],
-            spmCache: nil,
-            includingPackages: false
-        )
-        return libraries.filter { filter.contains($0.name.lowercased()) }
-    }
-    
-    func getHelp(with arg: String?) throws -> String {
-        guard let arg = arg else {
-            let width = Command.allCases.map { $0.rawValue.count }.max(by: <) ?? 0
-            return """
-            Available commands:
-            
-            \(Command.allCases.map {
-                "   \($0.rawValue.addingTrailingSpace(toWidth: width))   \($0.help)"
-            }.joined(separator: "\n"))
-            
-            (Type 'tribute help [command]' for more information)
-            """
-        }
-        guard let command = Command(rawValue: arg) else {
-            let commands = Command.allCases.map { $0.rawValue }
-            if let closest = bestMatches(for: arg, in: commands).first {
-                throw TributeError("Unrecognized command '\(arg)'. Did you mean '\(closest)'?")
-            }
-            throw TributeError("Unrecognized command '\(arg)'.")
-        }
-        let detailedHelp: String
-        switch command {
-            case .help:
-                detailedHelp = """
-               [command]  The command to display help for.
-            """
-            case .export:
-                detailedHelp = """
-               [filepath]   Path to the file that the licenses should be exported to. If omitted
-                            then the licenses will be written to stdout.
-            
-               --exclude    One or more directories to be excluded from the library search.
-                            Paths should be relative to the current directory, and may include
-                            wildcard/glob syntax.
-            
-               --skip       One or more libraries to be skipped. Use this for libraries that do
-                            not require attribution, or which are used in the build process but
-                            are not actually shipped to the end-user.
-            
-               --allow      A list of libraries that should be included even if their licenses
-                            are not supported/recognized.
-            
-               --template   A template string or path to a template file to use for generating
-                            the licenses file. The template should contain one or more of the
-                            following placeholder strings:
-            
-                            $name        The name of the library
-                            $type        The license type (e.g. MIT, Apache, BSD)
-                            $text        The text of the license itself
-                            $start       The start of the license template (after the header)
-                            $end         The end of the license template (before the footer)
-                            $separator   A delimiter to be included between each license
-            
-               --format     How the output should be formatted (JSON, XML or text). If omitted
-                            this will be inferred automatically from the template contents.
-            
-               --spmcache   Path to the Swift Package Manager cache (where SPM stores downloaded
-                            libraries). If omitted the standard derived data path will be used.
-            """
-            case .check:
-                detailedHelp = """
-               [filepath]   The path to the licenses file that will be compared against the
-                            libraries found in the project (required). An error will be returned
-                            if any libraries are missing from the file, or if the format doesn't
-                            match the other parameters.
-            
-               --exclude    One or more directories to be excluded from the library search.
-                            Paths should be relative to the current directory, and may include
-                            wildcard/glob syntax.
-            
-               --skip       One or more libraries to be skipped. Use this for libraries that do
-                            not require attribution, or which are used in the build process but
-                            are not actually shipped to the end-user.
-            """
-            case .checkUnsuported:
-                detailedHelp = """
-               --exclude       One or more directories to be excluded from the library search.
-                               Paths should be relative to the current directory, and may include
-                               wildcard/glob syntax.
-            
-               --skip          One or more libraries to be skipped. Use this for libraries that do
-                               not require attribution, or which are used in the build process but
-                               are not actually shipped to the end-user.
-            
-               --unsuported    One or more licencies that are considered unsuported. All used licences
-                               in the project, will be compared against these.
-                               Default values: [AGPL, LGPL, GPL]
-            """
-            case .list, .version:
-                return command.help
-        }
-        
-        return command.help + ".\n\n" + detailedHelp + "\n"
-    }
     
     func listLibraries(in directory: String, with args: [String]) throws -> String {
         let arguments = try preprocessArguments(args)
@@ -472,7 +117,7 @@ class Tribute {
         let path = "."
         let directoryURL = expandPath(path, in: directory)
         let cacheURL = spmCache.map { expandPath($0, in: directory) }
-        let libraries = try fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheURL)
+        let libraries = try librariesFetcher.fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheURL)
         
         // Output
         let nameWidth = libraries.map { $0.name.count }.max() ?? 0
@@ -494,11 +139,11 @@ class Tribute {
         let path = "."
         let directoryURL = expandPath(path, in: directory)
         let cacheURL = spmCache.map { expandPath($0, in: directory) }
-        var libraries = try fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheURL)
+        var libraries = try librariesFetcher.fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheURL)
         let libraryNames = libraries.map { $0.name.lowercased() }
         
         if let name = skip.first(where: { !libraryNames.contains($0) }) {
-            if let closest = bestMatches(for: name.lowercased(), in: libraryNames).first {
+            if let closest = closestMatchFInder.bestMatches(for: name.lowercased(), in: libraryNames).first {
                 throw TributeError("Unknown library '\(name)'. Did you mean '\(closest)'?")
             }
             throw TributeError("Unknown library '\(name)'.")
@@ -539,11 +184,11 @@ class Tribute {
         let path = "."
         let directoryURL = expandPath(path, in: directory)
         let cacheURL = spmCache.map { expandPath($0, in: directory) }
-        var libraries = try fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheURL)
+        var libraries = try librariesFetcher.fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheURL)
         let libraryNames = libraries.map { $0.name.lowercased() }
         
         if let name = skip.first(where: { !libraryNames.contains($0) }) {
-            if let closest = bestMatches(for: name.lowercased(), in: libraryNames).first {
+            if let closest = closestMatchFInder.bestMatches(for: name.lowercased(), in: libraryNames).first {
                 throw TributeError("Unknown library '\(name)'. Did you mean '\(closest)'?")
             }
             throw TributeError("Unknown library '\(name)'.")
@@ -565,7 +210,7 @@ class Tribute {
         let unsuportedLicencies: [LicenseType] = try unsuported
             .map { name in
                 guard let licence = LicenseType.init(rawValue: name) else {
-                    if let closest = bestMatches(for: name.lowercased(), in: LicenseType.allRawValues()).first {
+                    if let closest = closestMatchFInder.bestMatches(for: name.lowercased(), in: LicenseType.allRawValues()).first {
                         throw TributeError("Unknown library '\(name)'. Did you mean '\(closest)'?")
                     } else {
                         throw TributeError("Unknown licence '\(name)'")
@@ -620,7 +265,7 @@ class Tribute {
         if let rawFormat = rawFormat {
             guard let _format = Format(rawValue: rawFormat) else {
                 let formats = Format.allCases.map { $0.rawValue }
-                if let closest = bestMatches(for: rawFormat, in: formats).first {
+                if let closest = closestMatchFInder.bestMatches(for: rawFormat, in: formats).first {
                     throw TributeError("Unsupported output format '\(rawFormat)'. Did you mean '\(closest)'?")
                 }
                 throw TributeError("Unsupported output format '\(rawFormat)'.")
@@ -639,11 +284,11 @@ class Tribute {
         } else {
             cacheDirectory = nil
         }
-        var libraries = try fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheDirectory)
+        var libraries = try librariesFetcher.fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheDirectory)
         let libraryNames = libraries.map { $0.name.lowercased() }
         
         if let name = (allow + skip).first(where: { !libraryNames.contains($0) }) {
-            if let closest = bestMatches(for: name.lowercased(), in: libraryNames).first {
+            if let closest = closestMatchFInder.bestMatches(for: name.lowercased(), in: libraryNames).first {
                 throw TributeError("Unknown library '\(name)'. Did you mean '\(closest)'?")
             }
             throw TributeError("Unknown library '\(name)'.")
@@ -683,14 +328,14 @@ class Tribute {
         let arg = args.count > 1 ? args[1] : Command.help.rawValue
         guard let command = Command(rawValue: arg) else {
             let commands = Command.allCases.map { $0.rawValue }
-            if let closest = bestMatches(for: arg, in: commands).first {
+            if let closest = closestMatchFInder.bestMatches(for: arg, in: commands).first {
                 throw TributeError("Unrecognized command '\(arg)'. Did you mean '\(closest)'?")
             }
             throw TributeError("Unrecognized command '\(arg)'.")
         }
         switch command {
             case .help:
-                return try getHelp(with: args.count > 2 ? args[2] : nil)
+                return try helpProvider.getHelp(with: args.count > 2 ? args[2] : nil)
             case .list:
                 return try listLibraries(in: directory, with: args)
             case .export:
@@ -700,7 +345,7 @@ class Tribute {
             case .checkUnsuported:
                 return try checkUnsuported(in: directory, with: args)
             case .version:
-                return "0.3.3"
+                return "0.4.0"
         }
     }
 }

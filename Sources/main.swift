@@ -14,7 +14,7 @@ enum ExitCode: Int32 {
 
 do {
     let tribute = Tribute()
-    print(try tribute.run(in: FileManager.default.currentDirectoryPath))
+    print(try tribute.run(in: "/Users/marekslaninka/MOFA/surglogs-ios"))
     exit(ExitCode.ok.rawValue)
 } catch {
     print("error: \(error)")
