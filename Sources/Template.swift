@@ -96,7 +96,7 @@ struct Template: RawRepresentable {
         let separator = String(rawValue[separatorRange.upperBound ..< endRange.lowerBound])
 
         let body = libraries.map { library -> String in
-            let licenseType = library.licenseType?.rawValue ?? "Unknown"
+            let licenseType = library.licenseType.rawValue
             return section
                 .replacingOccurrences(
                     of: "\"$name\"", with: escape(library.name, as: format, inQuotes: true)

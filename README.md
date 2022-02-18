@@ -19,7 +19,7 @@ Installation
 You can install the tool on macOS either by building it yourself from source, or by using [Mint](https://github.com/yonaskolb/Mint) as follows:
 
 ```bash
-$ mint install nicklockwood/Tribute
+$ mint install https://github.com/MarekSlaninka/Tribute
 ```
 
 

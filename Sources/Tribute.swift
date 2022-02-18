@@ -8,10 +8,20 @@
 import Foundation
 
 struct TributeError: Error, CustomStringConvertible {
-    let description: String
     
-    init(_ message: String) {
+    enum ErrorType {
+        case unknownLicence
+        case unsuportedLicence
+        case unknown
+    }
+    
+    
+    let description: String
+    let type: ErrorType
+    
+    init(_ message: String, type: ErrorType = .unknown) {
         self.description = message
+        self.type = type
     }
 }
 
@@ -23,6 +33,7 @@ enum Argument: String, CaseIterable {
     case template
     case format
     case spmcache
+    case unsuported
 }
 
 enum Command: String, CaseIterable {
@@ -31,6 +42,7 @@ enum Command: String, CaseIterable {
     case check
     case help
     case version
+    case checkUnsuported
     
     var help: String {
         switch self {
@@ -38,18 +50,22 @@ enum Command: String, CaseIterable {
             case .list: return "Display list of libraries and licenses found in project"
             case .export: return "Export license information for project"
             case .check: return "Check that exported license info is correct"
+            case .checkUnsuported: return "Check that all licences are suported or known"
             case .version: return "Display the current version of Tribute"
         }
     }
 }
 
-enum LicenseType: String, CaseIterable {
+enum LicenseType: String, CaseIterable, Equatable {
     case bsd = "BSD"
     case mit = "MIT"
     case isc = "ISC"
     case zlib = "Zlib"
     case apache = "Apache"
-    case UNKNOWN
+    case agpl = "AGPL"
+    case lgpl = "LGPL"
+    case gpl = "GPL"
+    case UNKNOWN = "unknown"
     
     private var matchStrings: [String] {
         switch self {
@@ -81,10 +97,23 @@ enum LicenseType: String, CaseIterable {
                 return [
                     
                 ]
+            case .agpl:
+                return [
+                    "GNU AFFERO GENERAL PUBLIC LICENSE",
+                ]
+            case .lgpl:
+                return [
+                    "GNU LESSER GENERAL PUBLIC LICENSE",
+                ]
+            case .gpl:
+                return [
+                    "GNU GENERAL PUBLIC LICENSE",
+                ]
+                
         }
     }
     
-    init?(licenseText: String) {
+    init(licenseText: String) {
         let preprocessedText = Self.preprocess(licenseText)
         guard let type =
                 Self
@@ -114,12 +143,17 @@ enum LicenseType: String, CaseIterable {
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
     }
+    
+    static func allRawValues() -> [String] {
+        return Self.allCases.map({$0.rawValue})
+    }
+    
 }
 
 struct Library {
     var name: String
     var licensePath: String
-    var licenseType: LicenseType?
+    var licenseType: LicenseType
     var licenseText: String
 }
 
@@ -408,6 +442,20 @@ class Tribute {
                             not require attribution, or which are used in the build process but
                             are not actually shipped to the end-user.
             """
+            case .checkUnsuported:
+                detailedHelp = """
+               --exclude       One or more directories to be excluded from the library search.
+                               Paths should be relative to the current directory, and may include
+                               wildcard/glob syntax.
+            
+               --skip          One or more libraries to be skipped. Use this for libraries that do
+                               not require attribution, or which are used in the build process but
+                               are not actually shipped to the end-user.
+            
+               --unsuported    One or more licencies that are considered unsuported. All used licences
+                               in the project, will be compared against these.
+                               Default values: [AGPL, LGPL, GPL]
+            """
             case .list, .version:
                 return command.help
         }
@@ -430,7 +478,7 @@ class Tribute {
         let nameWidth = libraries.map { $0.name.count }.max() ?? 0
         return libraries.map {
             let name = $0.name + String(repeating: " ", count: nameWidth - $0.name.count)
-            var type = ($0.licenseType?.rawValue ?? "Unknown")
+            var type = ($0.licenseType.rawValue)
             type += String(repeating: " ", count: 7 - type.count)
             return "\(name)  \(type)  \($0.licensePath)"
         }.joined(separator: "\n")
@@ -464,7 +512,7 @@ class Tribute {
         guard let inputURL = (anon.count > 2 ? anon[2] : nil).map({
             expandPath($0, in: directory)
         }) else {
-            throw TributeError("Missing path to licenses file.")
+            throw TributeError("Missing path to licenses file. \(anon)")
         }
         
         // Check
@@ -478,6 +526,64 @@ class Tribute {
             throw TributeError("License for '\(library.name)' is missing from licenses file.")
         }
         return "Licenses file is up-to-date."
+    }
+    
+    func checkUnsuported(in directory: String, with args: [String]) throws -> String {
+        let arguments = try preprocessArguments(args)
+        let skip = (arguments[.skip] ?? []).map { $0.lowercased() }
+        let unsuported = (arguments[.unsuported] ?? ["AGPL", "LGPL", "GPL"]).map { $0.uppercased() }
+        let globs = (arguments[.exclude] ?? []).map { expandGlob($0, in: directory) }
+        let spmCache = arguments[.spmcache]?.first
+        
+        // Directory
+        let path = "."
+        let directoryURL = expandPath(path, in: directory)
+        let cacheURL = spmCache.map { expandPath($0, in: directory) }
+        var libraries = try fetchLibraries(in: directoryURL, excluding: globs, spmCache: cacheURL)
+        let libraryNames = libraries.map { $0.name.lowercased() }
+        
+        if let name = skip.first(where: { !libraryNames.contains($0) }) {
+            if let closest = bestMatches(for: name.lowercased(), in: libraryNames).first {
+                throw TributeError("Unknown library '\(name)'. Did you mean '\(closest)'?")
+            }
+            throw TributeError("Unknown library '\(name)'.")
+        }
+        
+        // Filtering
+        libraries = libraries.filter { !skip.contains($0.name.lowercased()) }
+        
+        // Check if unknown
+        let unknownLicencesLibraries = libraries
+            .filter{$0.licenseType == .UNKNOWN}
+        
+        guard unknownLicencesLibraries.isEmpty else {
+            let errorText: String = unknownLicencesLibraries.map({"\($0.name)"}).joined(separator: "\n")
+            throw TributeError("Unknown licence libraries '\(errorText)'", type: .unknownLicence)
+        }
+        
+        // Check if unsuported
+        let unsuportedLicencies: [LicenseType] = try unsuported
+            .map { name in
+                guard let licence = LicenseType.init(rawValue: name) else {
+                    if let closest = bestMatches(for: name.lowercased(), in: LicenseType.allRawValues()).first {
+                        throw TributeError("Unknown library '\(name)'. Did you mean '\(closest)'?")
+                    } else {
+                        throw TributeError("Unknown licence '\(name)'")
+                    }
+                    
+                }
+                return licence
+            }
+        
+        let unsuportedLicencesLibraries = libraries
+            .filter({unsuportedLicencies.contains($0.licenseType)})
+        
+        guard unsuportedLicencesLibraries.isEmpty else {
+            let errorText: String = unsuportedLicencesLibraries.map({"\($0.name) -> \($0.licenseType.rawValue)"}).joined(separator: "\n")
+            throw TributeError("Unsuported licence libraries '\(errorText)'", type: .unknownLicence)
+        }
+        
+        return "All licences are okay"
     }
     
     func export(in directory: String, with args: [String]) throws -> String {
@@ -591,6 +697,8 @@ class Tribute {
                 return try export(in: directory, with: args)
             case .check:
                 return try check(in: directory, with: args)
+            case .checkUnsuported:
+                return try checkUnsuported(in: directory, with: args)
             case .version:
                 return "0.3.1"
         }

@@ -1,6 +1,10 @@
 # Change Log
 
-## [0.3.0](https://github.com/nicklockwood/Tribute/releases/tag/0.3.0) (2021-02-20)
+## [0.3.2](https://github.com/nicklockwood/Tribute/releases/tag/0.3.0) (2022-02-18)
+
+- Added support for chcecking, if there is any unsuported or unknown licence in libraries 
+
+## [0.3.1](https://github.com/nicklockwood/Tribute/releases/tag/0.3.0) (2022-02-18)
 
 - Removed control for unresolved packages, that in our case are our own
 
